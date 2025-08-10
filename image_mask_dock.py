@@ -5,12 +5,14 @@ from datetime import datetime
 from pathlib import Path
 from qgis.PyQt import QtWidgets, QtCore
 from qgis.PyQt.QtCore import pyqtSignal, Qt
-from qgis.core import QgsRasterLayer, QgsProject, Qgis, QgsMultiBandColorRenderer
+from qgis.core import (QgsRasterLayer, QgsProject, Qgis, QgsMultiBandColorRenderer, 
+                      QgsLayerTreeLayer, QgsSingleBandPseudoColorRenderer, 
+                      QgsColorRampShader, QgsRasterShader, QgsGradientColorRamp)
 from qgis.PyQt.QtWidgets import (QDockWidget, QVBoxLayout, QHBoxLayout, 
                                  QLabel, QLineEdit, QPushButton, 
                                  QGroupBox, QMessageBox, QWidget,
                                  QProgressBar, QSpacerItem, QSizePolicy,
-                                 QCheckBox)
+                                 QCheckBox, QRadioButton, QButtonGroup)
 
 
 class ImageMaskDock(QDockWidget):
@@ -20,13 +22,15 @@ class ImageMaskDock(QDockWidget):
         self.iface = iface
         self.image_dir = ""
         self.mask_dir = ""
+        self.mask_veg_dir = ""
         self.output_dir = ""
-        self.mask_suffix = "_mask"
+        self.mask_suffix = "_rf_classified"
+        self.mask_veg_suffix = "_vegmask_ndvi"
         self.all_pairs = []
         self.filtered_pairs = []
         self.current_index = 0
         self.csv_path = ""
-        self.review_data = {}
+        self.current_triplet_layers = []  # Track current triplet layers
         
         self.setupUi()
         self.connectSignals()
@@ -59,6 +63,16 @@ class ImageMaskDock(QDockWidget):
         mask_layout.addWidget(self.browse_mask_btn)
         dir_layout.addLayout(mask_layout)
         
+        # Mask Veg directory
+        mask_veg_layout = QHBoxLayout()
+        mask_veg_layout.addWidget(QLabel("Mask Veg:"))
+        self.mask_veg_dir_edit = QLineEdit()
+        mask_veg_layout.addWidget(self.mask_veg_dir_edit)
+        self.browse_mask_veg_btn = QPushButton("...")
+        self.browse_mask_veg_btn.setMaximumWidth(30)
+        mask_veg_layout.addWidget(self.browse_mask_veg_btn)
+        dir_layout.addLayout(mask_veg_layout)
+        
         # Output directory
         output_layout = QHBoxLayout()
         output_layout.addWidget(QLabel("Output:"))
@@ -69,14 +83,17 @@ class ImageMaskDock(QDockWidget):
         output_layout.addWidget(self.browse_output_btn)
         dir_layout.addLayout(output_layout)
         
-        # Mask suffix
+        # Suffixes
         suffix_layout = QHBoxLayout()
-        suffix_layout.addWidget(QLabel("Suffix:"))
+        suffix_layout.addWidget(QLabel("Mask Suffix:"))
         self.suffix_edit = QLineEdit(self.mask_suffix)
         suffix_layout.addWidget(self.suffix_edit)
+        suffix_layout.addWidget(QLabel("Veg Suffix:"))
+        self.veg_suffix_edit = QLineEdit(self.mask_veg_suffix)
+        suffix_layout.addWidget(self.veg_suffix_edit)
         dir_layout.addLayout(suffix_layout)
         
-        self.load_btn = QPushButton("Load Pairs")
+        self.load_btn = QPushButton("Load Triplets")
         self.load_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 8px; }")
         dir_layout.addWidget(self.load_btn)
         
@@ -115,6 +132,23 @@ class ImageMaskDock(QDockWidget):
         self.status_indicator.setAlignment(Qt.AlignCenter)
         self.status_indicator.setStyleSheet("QLabel { padding: 5px; border-radius: 3px; }")
         review_layout.addWidget(self.status_indicator)
+        
+        # Mask type selection
+        mask_type_group = QGroupBox("Save Decision For:")
+        mask_type_layout = QHBoxLayout()
+        
+        self.mask_type_group = QButtonGroup()
+        self.mask_radio = QRadioButton("Mask")
+        self.mask_veg_radio = QRadioButton("Mask Veg")
+        self.mask_veg_radio.setChecked(True)  # Default to mask_veg
+        
+        self.mask_type_group.addButton(self.mask_radio, 0)
+        self.mask_type_group.addButton(self.mask_veg_radio, 1)
+        
+        mask_type_layout.addWidget(self.mask_radio)
+        mask_type_layout.addWidget(self.mask_veg_radio)
+        mask_type_group.setLayout(mask_type_layout)
+        review_layout.addWidget(mask_type_group)
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -161,6 +195,7 @@ class ImageMaskDock(QDockWidget):
     def connectSignals(self):
         self.browse_image_btn.clicked.connect(self.browse_image_directory)
         self.browse_mask_btn.clicked.connect(self.browse_mask_directory)
+        self.browse_mask_veg_btn.clicked.connect(self.browse_mask_veg_directory)
         self.browse_output_btn.clicked.connect(self.browse_output_directory)
         self.load_btn.clicked.connect(self.load_pairs)
         self.show_reviewed_cb.toggled.connect(self.filter_pairs)
@@ -182,6 +217,12 @@ class ImageMaskDock(QDockWidget):
         if directory:
             self.mask_dir_edit.setText(directory)
             
+    def browse_mask_veg_directory(self):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Mask Veg Directory", self.mask_veg_dir_edit.text())
+        if directory:
+            self.mask_veg_dir_edit.setText(directory)
+            
     def browse_output_directory(self):
         directory = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select Output Directory", self.output_dir_edit.text())
@@ -191,25 +232,27 @@ class ImageMaskDock(QDockWidget):
     def load_pairs(self):
         self.image_dir = self.image_dir_edit.text()
         self.mask_dir = self.mask_dir_edit.text()
+        self.mask_veg_dir = self.mask_veg_dir_edit.text()
         self.output_dir = self.output_dir_edit.text()
         self.mask_suffix = self.suffix_edit.text()
+        self.mask_veg_suffix = self.veg_suffix_edit.text()
         
-        if not all([self.image_dir, self.mask_dir, self.output_dir]):
+        if not all([self.image_dir, self.mask_dir, self.mask_veg_dir, self.output_dir]):
             QMessageBox.warning(self, "Warning", "Please select all directories!")
             return
             
-        if not all(os.path.exists(d) for d in [self.image_dir, self.mask_dir]):
-            QMessageBox.warning(self, "Warning", "Image or mask directory does not exist!")
+        if not all(os.path.exists(d) for d in [self.image_dir, self.mask_dir, self.mask_veg_dir]):
+            QMessageBox.warning(self, "Warning", "One or more directories do not exist!")
             return
             
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Setup CSV
+        # Setup CSV with new structure
         self.csv_path = os.path.join(self.output_dir, 'review_log.csv')
         if not os.path.exists(self.csv_path):
             with open(self.csv_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['timestamp', 'image_file', 'mask_file', 'status', 'notes'])
+                writer.writerow(['timestamp', 'image_file', 'mask_file', 'mask_veg_file', 'mask_type', 'status', 'notes'])
         
         self.load_review_data()
         self.find_pairs()
@@ -221,7 +264,7 @@ class ImageMaskDock(QDockWidget):
             self.load_current_pair()
             self.update_ui()
             
-        # Always enable show_reviewed checkbox if we have any pairs (reviewed or not)
+        # Always enable show_reviewed checkbox if we have any pairs
         self.show_reviewed_cb.setEnabled(len(self.all_pairs) > 0)
             
     def load_review_data(self):
@@ -234,18 +277,30 @@ class ImageMaskDock(QDockWidget):
                 print(f"CSV shape: {df.shape}")
                 
                 if not df.empty and 'image_file' in df.columns:
-                    # Handle both 'status' and 'decision' column names for backward compatibility
-                    status_col = 'status' if 'status' in df.columns else 'decision'
-                    print(f"Using status column: {status_col}")
-                    
-                    for _, row in df.iterrows():
-                        key = (row['image_file'], row['mask_file'])
-                        self.review_data[key] = {
-                            'status': row[status_col],
-                            'timestamp': row['timestamp'],
-                            'notes': row.get('notes', '')
-                        }
-                        print(f"Loaded: {key} -> {row[status_col]}")
+                    # Handle both old and new CSV formats
+                    if 'mask_type' in df.columns:
+                        # New format with mask_type
+                        for _, row in df.iterrows():
+                            key = (row['image_file'], row.get('mask_file', ''), row.get('mask_veg_file', ''), row['mask_type'])
+                            self.review_data[key] = {
+                                'status': row['status'],
+                                'timestamp': row['timestamp'],
+                                'mask_type': row['mask_type'],
+                                'notes': row.get('notes', '')
+                            }
+                            print(f"Loaded: {key} -> {row['status']}")
+                    else:
+                        # Old format - convert to new format
+                        status_col = 'status' if 'status' in df.columns else 'decision'
+                        for _, row in df.iterrows():
+                            # Assume old entries are for regular masks
+                            key = (row['image_file'], row['mask_file'], '', 'mask')
+                            self.review_data[key] = {
+                                'status': row[status_col],
+                                'timestamp': row['timestamp'],
+                                'mask_type': 'mask',
+                                'notes': row.get('notes', '')
+                            }
                     print(f"Total loaded {len(self.review_data)} review records from CSV")
                 else:
                     print("CSV is empty or missing required columns")
@@ -260,12 +315,18 @@ class ImageMaskDock(QDockWidget):
         
         image_files = [f for f in os.listdir(self.image_dir) 
                       if any(f.lower().endswith(ext) for ext in image_extensions)
-                      and self.mask_suffix not in f]
+                      and self.mask_suffix not in f
+                      and self.mask_veg_suffix not in f]
         
         for image_file in sorted(image_files):
             image_path = os.path.join(self.image_dir, image_file)
             base_name = os.path.splitext(image_file)[0]
             ext = os.path.splitext(image_file)[1]
+            
+            # Find regular mask
+            mask_found = False
+            mask_path = None
+            mask_file = None
             
             possible_masks = [
                 base_name + self.mask_suffix + ext,
@@ -274,16 +335,48 @@ class ImageMaskDock(QDockWidget):
             ]
             
             for mask_name in possible_masks:
-                mask_path = os.path.join(self.mask_dir, mask_name)
-                if os.path.exists(mask_path):
-                    self.all_pairs.append({
-                        'image_path': image_path,
-                        'mask_path': mask_path,
-                        'image_file': image_file,
-                        'mask_file': mask_name,
-                        'status': 'not_reviewed'  # Will be updated later
-                    })
+                mask_test_path = os.path.join(self.mask_dir, mask_name)
+                if os.path.exists(mask_test_path):
+                    mask_path = mask_test_path
+                    mask_file = mask_name
+                    mask_found = True
                     break
+            
+            # Find mask_veg
+            mask_veg_found = False
+            mask_veg_path = None
+            mask_veg_file = None
+            
+            possible_mask_vegs = [
+                base_name + self.mask_veg_suffix + ext,
+                base_name + self.mask_veg_suffix + '.tif',
+                base_name + self.mask_veg_suffix + '.png',
+            ]
+            
+            for mask_veg_name in possible_mask_vegs:
+                mask_veg_test_path = os.path.join(self.mask_veg_dir, mask_veg_name)
+                if os.path.exists(mask_veg_test_path):
+                    mask_veg_path = mask_veg_test_path
+                    mask_veg_file = mask_veg_name
+                    mask_veg_found = True
+                    break
+            
+            # Only add if we have both mask and mask_veg
+            if mask_found and mask_veg_found:
+                print(f"Found triplet: {image_file} + {mask_file} + {mask_veg_file}")
+                self.all_pairs.append({
+                    'image_path': image_path,
+                    'mask_path': mask_path,
+                    'mask_veg_path': mask_veg_path,
+                    'image_file': image_file,
+                    'mask_file': mask_file,
+                    'mask_veg_file': mask_veg_file,
+                    'status': 'not_reviewed'  # Will be updated later
+                })
+            else:
+                print(f"Incomplete triplet for {image_file}: mask={mask_found}, mask_veg={mask_veg_found}")
+                
+        print(f"Total triplets found: {len(self.all_pairs)}")
                     
     def update_pair_statuses(self):
         """Update pair statuses from loaded review data."""
@@ -291,18 +384,22 @@ class ImageMaskDock(QDockWidget):
         print(f"Review data contains {len(self.review_data)} entries")
         
         for pair in self.all_pairs:
-            key = (pair['image_file'], pair['mask_file'])
-            print(f"Checking pair: {key}")
+            # Check both mask types for this triplet
+            mask_key = (pair['image_file'], pair['mask_file'], pair['mask_veg_file'], 'mask')
+            mask_veg_key = (pair['image_file'], pair['mask_file'], pair['mask_veg_file'], 'mask_veg')
             
-            if key in self.review_data:
-                old_status = pair['status']
-                pair['status'] = self.review_data[key]['status']
-                print(f"  Updated: {old_status} -> {pair['status']}")
+            # If either has been reviewed, mark as reviewed (prefer mask_veg)
+            if mask_veg_key in self.review_data:
+                pair['status'] = self.review_data[mask_veg_key]['status']
+                print(f"  Updated from mask_veg: {pair['status']}")
+            elif mask_key in self.review_data:
+                pair['status'] = self.review_data[mask_key]['status']
+                print(f"  Updated from mask: {pair['status']}")
             else:
-                print(f"  No review data found for: {key}")
+                print(f"  No review data found for: {pair['image_file']}")
                 
         print("Status update complete")
-                    
+        
     def filter_pairs(self):
         if self.show_reviewed_cb.isChecked():
             self.filtered_pairs = self.all_pairs.copy()
@@ -331,7 +428,7 @@ class ImageMaskDock(QDockWidget):
             self.clear_display()
             
     def clear_display(self):
-        QgsProject.instance().clear()
+        self.clear_current_triplet()
         self.current_file_label.setText("No pairs to review")
         self.status_indicator.setText("")
         self.status_indicator.setStyleSheet("QLabel { padding: 5px; border-radius: 3px; }")
@@ -342,17 +439,25 @@ class ImageMaskDock(QDockWidget):
         self.correct_btn.setEnabled(False)
         self.incorrect_btn.setEnabled(False)
         self.unreview_btn.setEnabled(False)
-        # Don't disable show_reviewed_cb - keep it enabled so user can toggle to see reviewed pairs
+        
+    def clear_current_triplet(self):
+        """Remove only the current triplet layers, preserve other layers."""
+        for layer in self.current_triplet_layers:
+            if layer and QgsProject.instance().mapLayer(layer.id()):
+                QgsProject.instance().removeMapLayer(layer.id())
+        self.current_triplet_layers = []
         
     def load_current_pair(self):
         if not self.filtered_pairs or self.current_index >= len(self.filtered_pairs):
             return
             
-        QgsProject.instance().clear()
+        # Clear only previous triplet layers
+        self.clear_current_triplet()
         
         current_pair = self.filtered_pairs[self.current_index]
         image_path = current_pair['image_path']
         mask_path = current_pair['mask_path']
+        mask_veg_path = current_pair['mask_veg_path']
         base_name = os.path.splitext(current_pair['image_file'])[0]
         
         # Load image
@@ -360,14 +465,41 @@ class ImageMaskDock(QDockWidget):
         if image_layer.isValid():
             self.configure_image_bands(image_layer)
             QgsProject.instance().addMapLayer(image_layer)
+            self.current_triplet_layers.append(image_layer)
             
-        # Load mask
+        # Load mask (initially hidden)
         mask_layer = QgsRasterLayer(mask_path, f"{base_name}_mask")
         if mask_layer.isValid():
             QgsProject.instance().addMapLayer(mask_layer)
             mask_layer.setOpacity(0.6)
+            self.configure_mask_symbology(mask_layer)
+            self.current_triplet_layers.append(mask_layer)
+            # Hide mask layer using layer tree
+            root = QgsProject.instance().layerTreeRoot()
+            layer_tree_layer = root.findLayer(mask_layer.id())
+            if layer_tree_layer:
+                layer_tree_layer.setItemVisibilityChecked(False)
+            print(f"Loaded mask: {mask_path}")
+        else:
+            print(f"Failed to load mask: {mask_path}")
             
-        # Zoom to layer
+        # Load mask_veg (initially visible)
+        mask_veg_layer = QgsRasterLayer(mask_veg_path, f"{base_name}_mask_veg")
+        if mask_veg_layer.isValid():
+            QgsProject.instance().addMapLayer(mask_veg_layer)
+            mask_veg_layer.setOpacity(0.6)
+            self.configure_mask_symbology(mask_veg_layer)
+            self.current_triplet_layers.append(mask_veg_layer)
+            # Ensure mask_veg layer is visible
+            root = QgsProject.instance().layerTreeRoot()
+            layer_tree_layer = root.findLayer(mask_veg_layer.id())
+            if layer_tree_layer:
+                layer_tree_layer.setItemVisibilityChecked(True)
+            print(f"Loaded mask_veg: {mask_veg_path}")
+        else:
+            print(f"Failed to load mask_veg: {mask_veg_path}")
+            
+        # Zoom to image layer
         if image_layer.isValid():
             self.iface.setActiveLayer(image_layer)
             self.iface.zoomToActiveLayer()
@@ -380,9 +512,10 @@ class ImageMaskDock(QDockWidget):
         current_pair = self.filtered_pairs[self.current_index]
         image_name = current_pair['image_file']
         mask_name = current_pair['mask_file']
+        mask_veg_name = current_pair['mask_veg_file']
         status = current_pair['status']
         
-        self.current_file_label.setText(f"Image: {image_name}\nMask: {mask_name}")
+        self.current_file_label.setText(f"Image: {image_name}\nMask: {mask_name}\nMask Veg: {mask_veg_name}")
         
         # Update status indicator
         if status == 'correct':
@@ -429,16 +562,23 @@ class ImageMaskDock(QDockWidget):
         current_pair = self.filtered_pairs[self.current_index]
         image_file = current_pair['image_file']
         mask_file = current_pair['mask_file']
-        key = (image_file, mask_file)
+        mask_veg_file = current_pair['mask_veg_file']
+        
+        # Get selected mask type
+        mask_type = 'mask_veg' if self.mask_veg_radio.isChecked() else 'mask'
+        
+        # Create key for the selected mask type
+        key = (image_file, mask_file, mask_veg_file, mask_type)
         
         # Update review data in memory
         self.review_data[key] = {
             'status': decision,
             'timestamp': datetime.now().isoformat(),
+            'mask_type': mask_type,
             'notes': ''
         }
         
-        # Rewrite entire CSV to avoid duplicates
+        # Save to CSV
         self.save_review_data()
         
         # Update pair status
@@ -446,11 +586,13 @@ class ImageMaskDock(QDockWidget):
         
         # Update all_pairs as well
         for pair in self.all_pairs:
-            if pair['image_file'] == image_file and pair['mask_file'] == mask_file:
+            if (pair['image_file'] == image_file and 
+                pair['mask_file'] == mask_file and 
+                pair['mask_veg_file'] == mask_veg_file):
                 pair['status'] = decision
                 break
         
-        self.status_label.setText(f"Marked {mask_file} as {decision}")
+        self.status_label.setText(f"Marked {mask_type} as {decision}")
         
         # If not showing reviewed and current is now reviewed, re-filter
         if not self.show_reviewed_cb.isChecked() and decision != 'not_reviewed':
@@ -479,13 +621,15 @@ class ImageMaskDock(QDockWidget):
         """Save all review data to CSV, avoiding duplicates."""
         with open(self.csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['timestamp', 'image_file', 'mask_file', 'status', 'notes'])
+            writer.writerow(['timestamp', 'image_file', 'mask_file', 'mask_veg_file', 'mask_type', 'status', 'notes'])
             
-            for (image_file, mask_file), data in self.review_data.items():
+            for (image_file, mask_file, mask_veg_file, mask_type), data in self.review_data.items():
                 writer.writerow([
                     data['timestamp'],
                     image_file,
                     mask_file,
+                    mask_veg_file,
+                    mask_type,
                     data['status'],
                     data.get('notes', '')
                 ])
@@ -506,3 +650,31 @@ class ImageMaskDock(QDockWidget):
             except Exception as e:
                 print(f"Error setting band order: {e}")
                 # Fallback to default if error occurs
+                
+    def configure_mask_symbology(self, mask_layer):
+        """Configure mask layer to display value 1 as white."""
+        try:
+            # Create a pseudocolor renderer
+            renderer = QgsSingleBandPseudoColorRenderer(mask_layer.dataProvider(), 1)
+            
+            # Create color ramp shader
+            shader = QgsRasterShader()
+            ramp_shader = QgsColorRampShader()
+            ramp_shader.setColorRampType(QgsColorRampShader.Discrete)
+            
+            # Define color map: value 0 = transparent, value 1 = white
+            color_list = [
+                QgsColorRampShader.ColorRampItem(0, QtCore.Qt.transparent, '0'),
+                QgsColorRampShader.ColorRampItem(1, QtCore.Qt.white, '1')
+            ]
+            
+            ramp_shader.setColorRampItemList(color_list)
+            shader.setRasterShaderFunction(ramp_shader)
+            renderer.setShader(shader)
+            
+            # Apply renderer to layer
+            mask_layer.setRenderer(renderer)
+            mask_layer.triggerRepaint()
+            
+        except Exception as e:
+            print(f"Error setting mask symbology: {e}")

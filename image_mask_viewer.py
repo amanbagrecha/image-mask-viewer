@@ -64,8 +64,10 @@ class ImageMaskViewer:
             self.first_start = False
             self.dock = ImageMaskDock(self.iface)
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
-        
-        if self.dock.isVisible():
-            self.dock.hide()
+            self.dock.show()  # Always show on first creation
         else:
-            self.dock.show()
+            # Toggle visibility for subsequent clicks
+            if self.dock.isVisible():
+                self.dock.hide()
+            else:
+                self.dock.show()
