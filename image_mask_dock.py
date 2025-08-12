@@ -12,7 +12,8 @@ from qgis.PyQt.QtWidgets import (QDockWidget, QVBoxLayout, QHBoxLayout,
                                  QLabel, QLineEdit, QPushButton, 
                                  QGroupBox, QMessageBox, QWidget,
                                  QProgressBar, QSpacerItem, QSizePolicy,
-                                 QCheckBox, QRadioButton, QButtonGroup)
+                                 QCheckBox, QRadioButton, QButtonGroup,
+                                 QSpinBox)
 
 
 class ImageMaskDock(QDockWidget):
@@ -108,6 +109,21 @@ class ImageMaskDock(QDockWidget):
         self.show_reviewed_cb.setEnabled(False)
         filter_layout.addWidget(self.show_reviewed_cb)
         
+        # Go to index
+        goto_layout = QHBoxLayout()
+        goto_layout.addWidget(QLabel("Go to Index:"))
+        self.goto_spinbox = QSpinBox()
+        self.goto_spinbox.setMinimum(1)
+        self.goto_spinbox.setMaximum(1)
+        self.goto_spinbox.setEnabled(False)
+        goto_layout.addWidget(self.goto_spinbox)
+        
+        self.goto_btn = QPushButton("Go")
+        self.goto_btn.setEnabled(False)
+        self.goto_btn.setMaximumWidth(40)
+        goto_layout.addWidget(self.goto_btn)
+        filter_layout.addLayout(goto_layout)
+        
         filter_group.setLayout(filter_layout)
         layout.addWidget(filter_group)
         
@@ -199,6 +215,7 @@ class ImageMaskDock(QDockWidget):
         self.browse_output_btn.clicked.connect(self.browse_output_directory)
         self.load_btn.clicked.connect(self.load_pairs)
         self.show_reviewed_cb.toggled.connect(self.filter_pairs)
+        self.goto_btn.clicked.connect(self.goto_index)
         self.prev_btn.clicked.connect(self.previous_pair)
         self.next_btn.clicked.connect(self.next_pair)
         self.correct_btn.clicked.connect(lambda: self.review_current('correct'))
@@ -266,6 +283,16 @@ class ImageMaskDock(QDockWidget):
             
         # Always enable show_reviewed checkbox if we have any pairs
         self.show_reviewed_cb.setEnabled(len(self.all_pairs) > 0)
+        
+        # Enable go to index controls
+        if self.filtered_pairs:
+            self.goto_spinbox.setEnabled(True)
+            self.goto_btn.setEnabled(True)
+            self.goto_spinbox.setMaximum(len(self.filtered_pairs))
+            self.goto_spinbox.setValue(1)
+        else:
+            self.goto_spinbox.setEnabled(False)
+            self.goto_btn.setEnabled(False)
             
     def load_review_data(self):
         self.review_data = {}
@@ -427,6 +454,21 @@ class ImageMaskDock(QDockWidget):
         else:
             self.clear_display()
             
+        # Update go to index controls
+        if self.filtered_pairs:
+            self.goto_spinbox.setEnabled(True)
+            self.goto_btn.setEnabled(True)
+            self.goto_spinbox.setMaximum(len(self.filtered_pairs))
+            # Keep current position if valid, otherwise reset to 1
+            if self.current_index < len(self.filtered_pairs):
+                self.goto_spinbox.setValue(self.current_index + 1)
+            else:
+                self.goto_spinbox.setValue(1)
+        else:
+            self.goto_spinbox.setEnabled(False)
+            self.goto_btn.setEnabled(False)
+            self.goto_spinbox.setMaximum(1)
+            
     def clear_display(self):
         self.clear_current_triplet()
         self.current_file_label.setText("No pairs to review")
@@ -439,13 +481,21 @@ class ImageMaskDock(QDockWidget):
         self.correct_btn.setEnabled(False)
         self.incorrect_btn.setEnabled(False)
         self.unreview_btn.setEnabled(False)
+        self.goto_spinbox.setEnabled(False)
+        self.goto_btn.setEnabled(False)
         
     def clear_current_triplet(self):
         """Remove only the current triplet layers, preserve other layers."""
-        for layer in self.current_triplet_layers:
-            if layer and QgsProject.instance().mapLayer(layer.id()):
-                QgsProject.instance().removeMapLayer(layer.id())
-        self.current_triplet_layers = []
+        for layer in self.current_triplet_layers[:]:  # Create copy to iterate safely
+            try:
+                if layer is not None:
+                    layer_id = layer.id()
+                    if QgsProject.instance().mapLayer(layer_id):
+                        QgsProject.instance().removeMapLayer(layer_id)
+            except RuntimeError:
+                # Layer already deleted, skip
+                pass
+        self.current_triplet_layers.clear()
         
     def load_current_pair(self):
         if not self.filtered_pairs or self.current_index >= len(self.filtered_pairs):
@@ -543,6 +593,25 @@ class ImageMaskDock(QDockWidget):
         self.incorrect_btn.setEnabled(True)
         self.unreview_btn.setEnabled(status != 'not_reviewed')
         
+        # Update go to spinbox to current position
+        self.goto_spinbox.setValue(self.current_index + 1)
+        
+    def goto_index(self):
+        """Jump to specified index in filtered pairs."""
+        if not self.filtered_pairs:
+            return
+            
+        target_index = self.goto_spinbox.value() - 1  # Convert to 0-based index
+        
+        if 0 <= target_index < len(self.filtered_pairs):
+            self.current_index = target_index
+            self.load_current_pair()
+            self.update_ui()
+        else:
+            QMessageBox.warning(self, "Invalid Index", 
+                              f"Index must be between 1 and {len(self.filtered_pairs)}")
+            self.goto_spinbox.setValue(self.current_index + 1)  # Reset to current
+        
     def previous_pair(self):
         if self.current_index > 0:
             self.current_index -= 1
@@ -554,6 +623,22 @@ class ImageMaskDock(QDockWidget):
             self.current_index += 1
             self.load_current_pair()
             self.update_ui()
+            
+    def goto_index(self):
+        """Jump to specified index in filtered pairs."""
+        if not self.filtered_pairs:
+            return
+            
+        target_index = self.goto_spinbox.value() - 1  # Convert to 0-based index
+        
+        if 0 <= target_index < len(self.filtered_pairs):
+            self.current_index = target_index
+            self.load_current_pair()
+            self.update_ui()
+        else:
+            QMessageBox.warning(self, "Invalid Index", 
+                              f"Index must be between 1 and {len(self.filtered_pairs)}")
+            self.goto_spinbox.setValue(self.current_index + 1)  # Reset to current
             
     def review_current(self, decision):
         if not self.filtered_pairs or self.current_index >= len(self.filtered_pairs):

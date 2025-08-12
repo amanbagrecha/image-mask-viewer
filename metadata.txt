@@ -5,8 +5,8 @@ name=Image Mask Viewer
 qgisMinimumVersion=3.0
 description=Load and view paired images with their corresponding masks
 version=1.0.0
-author=Your Name
-email=your.email@example.com
+author=Aman Bagrecha
+email=amanbargecha.blr@gmail.com
 
 about=This plugin provides a simple interface to load paired images and their corresponding masks. It automatically matches images with their masks based on naming conventions (e.g., image.tif and image_mask.tif) and adds them to the QGIS project as grouped layers.
 
@@ -18,8 +18,8 @@ about=This plugin provides a simple interface to load paired images and their co
     - Organize layers in groups
     - Clear all layers functionality
 
-tracker=https://github.com/yourusername/image-mask-viewer
-repository=https://github.com/yourusername/image-mask-viewer
+tracker=https://github.com/amanbagrecha/image-mask-viewer
+repository=https://github.com/amanbagrecha/image-mask-viewer
 # End of mandatory metadata
 
 # Recommended items:
@@ -33,11 +33,11 @@ changelog=
 # Tags are comma separated with spaces allowed
 tags=raster, image, mask, viewer, segmentation, remote sensing
 
-homepage=https://github.com/yourusername/image-mask-viewer
+homepage=https://github.com/amanbagrecha/image-mask-viewer
 category=Raster
 icon=icon.png
 # experimental flag
-experimental=False
+experimental=True
 
 # deprecated flag (applies to the whole plugin, not just a single version)
 deprecated=False
